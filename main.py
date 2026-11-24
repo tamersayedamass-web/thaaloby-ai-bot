@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-# بوت ثعلوبي AI - من الصفر
-import os, threading
-import asyncio
+# بوت ثعلوبي AI - بوت عام
+import os, threading, asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 def keep_alive():
@@ -30,14 +29,18 @@ else:
     model = None
 
 SYSTEM = """
-انت مساعد ذكاء اصطناعي خبير في التأمين الطبي السعودي ونظام نفيس NPHIES.
-بتتكلم بالعربي المصري البسيط والعملي.
-بتفهم:
-- ملفات JSON بتاعة FHIR و ClaimResponse و Organization
-- ملفات Excel بتاعة المطالبات فيها اعمدة زي gross, net_amount, discount_amount, patient_share, company_share, vat_amount, payer_name, tpa_name, disposition, adjudication_outcome, response_outcome, request_type, request_subtype, claim_date, policy_holder, accounting_period, cancel_status, statuscode
-- أكواد رفض نفيس ومعناها وازاي تصلحها
-لو اتبعتلك ملف، حلله بعمق وطلع مجاميع ونسب واعلى مطالبات واسباب رفض ونصايح للفريق.
-متكررش الارقام غلط، ولو مش متأكد قول مش متأكد.
+انت مساعد ذكاء اصطناعي عام، شاطر وذكي وبتتكلم بالعربي المصري البسيط والواضح.
+بتساعد في أي حاجة:
+- تشرح أي موضوع صعب بطريقة سهلة
+- تكتب مقالات، بوستات، رسائل، ايميلات، سيرة ذاتية
+- تحل مسائل رياضة وفيزياء وبرمجة
+- تحلل ملفات Excel و CSV و JSON وتطلع منها ملخصات وأرقام مهمة
+- تترجم لأي لغة
+- تعمل أفكار لمشاريع، محتوى، بيزنس
+- تنصح وتدي رأي عملي
+لو المستخدم بعت ملف، حلله بعمق وطلع أهم النقاط والأرقام والنصايح.
+لو مش متأكد من حاجة، قول مش متأكد.
+خليك دايما عملي ومختصر ومفيد، من غير رغي.
 """
 
 async def ask_ai(text):
@@ -51,13 +54,16 @@ async def ask_ai(text):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "أهلا بيك في بوت ثعلوبي AI 🤖🩺\n\n"
-        "أنا بوت ذكاء اصطناعي جديد من الصفر.\n"
-        "ابعتلي:\n"
-        "1. أي سؤال عن التأمين أو نفيس\n"
-        "2. ملف JSON بتاع نفيس\n"
-        "3. ملف Excel بتاع المطالبات\n\n"
-        "وأنا هفهمه وأحلله لوحدي."
+        "أهلا بيك في بوت ثعلوبي AI 🤖\n\n"
+        "أنا مساعدك الذكي الجديد.\n"
+        "اسألني أي حاجة، ابعتلي أي ملف، أي صورة، أي فكرة.\n\n"
+        "ممكن:\n"
+        "- اشرحلي أي درس\n"
+        "- اكتبلي بوست\n"
+        "- حللي ملف Excel\n"
+        "- ترجملي ده\n"
+        "- اعملي خطة لمشروع\n\n"
+        "ابعتلي دلوقتي انت عايز ايه؟"
     )
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,28 +78,20 @@ async def doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     f = await d.get_file()
     await update.message.reply_text("وصلني الملف، بحلله بالذكاء الاصطناعي ⏳")
     try:
-        if fname.endswith(".json"):
-            await f.download_to_drive("in.json")
-            with open("in.json", encoding="utf-8") as fh:
+        if fname.endswith(".json") or fname.endswith(".txt") or fname.endswith(".csv"):
+            await f.download_to_drive("in.txt")
+            with open("in.txt", encoding="utf-8", errors="ignore") as fh:
                 txt = fh.read()
-            ans = await ask_ai(f"حلل ملف JSON ده من نفيس بالكامل:\n{txt}")
+            ans = await ask_ai(f"حلل الملف ده بالكامل وطلع أهم النقاط:\n{txt}")
             for i in range(0, len(ans), 4000):
                 await update.message.reply_text(ans[i:i+4000])
             return
         await f.download_to_drive("in.xlsx")
-        df = pd.read_csv("in.xlsx") if fname.endswith(".csv") else pd.read_excel("in.xlsx")
+        df = pd.read_excel("in.xlsx")
         summary = f"عدد الصفوف: {len(df)}\nالأعمدة: {list(df.columns)}\n\n"
         summary += "أول 5 صفوف:\n" + df.head(5).to_string() + "\n\n"
-        summary += "وصف الأرقام:\n" + df.describe(include='all').to_string() + "\n\n"
-        for c in ['gross','net_amount','discount_amount','patient_share','company_share','vat_amount']:
-            if c in df.columns:
-                summary += f"مجموع {c}: {df[c].sum():,.2f}\n"
-        for c in ['payer_name','tpa_name','adjudication_outcome','response_outcome','disposition','statuscode','request_type','request_subtype','cancel_status','policy_holder','accounting_period']:
-            if c in df.columns:
-                summary += f"\nتوزيع {c}:\n" + df[c].value_counts().head(10).to_string() + "\n"
-        if 'gross' in df.columns:
-            summary += "\nأعلى 5 مطالبات:\n" + df.sort_values(by='gross', ascending=False).head(5).to_string() + "\n"
-        ans = await ask_ai(f"اعمل تحليل عميق كامل لملف المطالبات ده:\n{summary}")
+        summary += "وصف الأرقام:\n" + df.describe(include='all').to_string() + "\n"
+        ans = await ask_ai(f"اعمل تحليل عميق كامل لملف Excel ده:\n{summary}")
         for i in range(0, len(ans), 4000):
             await update.message.reply_text(ans[i:i+4000])
     except Exception as e:
@@ -105,7 +103,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_handler(MessageHandler(filters.Document.ALL, doc))
-    print("New AI Bot Running...")
+    print("Thaaloby AI Bot Running...")
     app.run_polling()
 
 if __name__ == "__main__":
