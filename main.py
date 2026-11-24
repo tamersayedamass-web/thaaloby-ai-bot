@@ -1,15 +1,23 @@
 # -*- coding: utf-8 -*-
 # بوت ثعلوبي AI - بوت عام
 import os
+import re
 import json
+import time
 import asyncio
 import logging
 import tempfile
 import threading
+from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pandas as pd
 import google.generativeai as genai
+try:
+    from google.api_core.exceptions import ResourceExhausted
+except ImportError:
+    class ResourceExhausted(Exception):
+        pass
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -75,11 +83,76 @@ SYSTEM = """
 خليك دايما عملي ومختصر ومفيد، من غير رغي.
 """
 
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "")
+RPM = int(os.environ.get("GEMINI_RPM", "4"))  # الحد المجاني 5 في الدقيقة، بنسيب هامش
+
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel(MODEL_NAME, system_instruction=SYSTEM)
-else:
-    model = None
+
+_models = {}
+
+
+def get_model(name):
+    if name not in _models:
+        _models[name] = genai.GenerativeModel(name, system_instruction=SYSTEM)
+    return _models[name]
+
+
+model = get_model(MODEL_NAME) if GEMINI_KEY else None
+
+# تنظيم معدل الطلبات: مش هنبعت أكتر من RPM طلب في الدقيقة للمشروع كله
+_rate_lock = asyncio.Lock()
+_calls = deque()
+
+
+async def throttle():
+    async with _rate_lock:
+        now = time.monotonic()
+        while _calls and now - _calls[0] >= 60:
+            _calls.popleft()
+        if len(_calls) >= RPM:
+            await asyncio.sleep(60 - (now - _calls[0]) + 0.5)
+            now = time.monotonic()
+            while _calls and now - _calls[0] >= 60:
+                _calls.popleft()
+        _calls.append(time.monotonic())
+
+
+def retry_delay(msg: str) -> float:
+    m = re.search(r"retry in ([\d.]+)s", msg) or re.search(r"seconds:\s*(\d+)", msg)
+    return float(m.group(1)) if m else 30.0
+
+
+async def generate_with_retry(contents):
+    """بيرجع (نجح؟، النص). بيستنى ويعيد المحاولة لو الكوتا خلصت، وبيجرب موديل بديل لو متظبط."""
+    names = [MODEL_NAME]
+    if FALLBACK_MODEL and FALLBACK_MODEL != MODEL_NAME:
+        names.append(FALLBACK_MODEL)
+    last_err = None
+    for attempt in range(2):
+        for name in names:
+            await throttle()
+            try:
+                resp = await get_model(name).generate_content_async(contents)
+                try:
+                    return True, resp.text
+                except ValueError:
+                    return False, "الذكاء الاصطناعي ما رجعش رد (ممكن يكون اتحجب). جرب صياغة تانية."
+            except ResourceExhausted as e:
+                last_err = e
+                log.warning("Quota hit on %s", name)
+            except Exception as e:
+                log.exception("Gemini error")
+                return False, f"فيه مشكلة في الذكاء الاصطناعي: {e}"
+        msg = str(last_err)
+        if "PerDay" in msg:
+            return False, "الحد اليومي المجاني لـ Gemini خلص. جرب بكرة أو فعّل الفوترة في Google AI Studio."
+        delay = retry_delay(msg)
+        if attempt == 0 and delay <= 90:
+            await asyncio.sleep(delay + 1)
+            continue
+        break
+    return False, "البوت وصل للحد المجاني لعدد الطلبات في الدقيقة. استنى دقيقة وابعت تاني."
 
 # ذاكرة المحادثة (في الرام، بتتمسح مع إعادة التشغيل)
 HISTORY: dict[int, list[tuple[str, str]]] = {}
@@ -98,15 +171,9 @@ async def ask_ai(user_id: int, text: str, media=None, remember: str | None = Non
     contents = [{"role": r, "parts": [t]} for r, t in hist]
     contents.append({"role": "user", "parts": parts})
 
-    try:
-        resp = await model.generate_content_async(contents)
-        try:
-            answer = resp.text
-        except ValueError:
-            return "الذكاء الاصطناعي ما رجعش رد (ممكن يكون اتحجب). جرب صياغة تانية."
-    except Exception as e:
-        log.exception("Gemini error")
-        return f"فيه مشكلة في الذكاء الاصطناعي: {e}"
+    ok, answer = await generate_with_retry(contents)
+    if not ok:
+        return answer
 
     hist.append(("user", (remember or text)[:6000]))
     hist.append(("model", answer[:6000]))
