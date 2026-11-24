@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # بوت ثعلوبي AI - من الصفر
 import os, threading
+import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 def keep_alive():
@@ -99,6 +100,7 @@ async def doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"فيه مشكلة في الملف: {e}")
 
 def main():
+    asyncio.set_event_loop(asyncio.new_event_loop())
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
